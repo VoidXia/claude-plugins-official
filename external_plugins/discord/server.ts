@@ -217,6 +217,11 @@ type GateResult =
   | { action: 'drop' }
   | { action: 'pair'; code: string; isResend: boolean }
 
+// Map DM channel ID → user ID. Populated in gate() from msg.author.id,
+// which is always reliable. Used in fetchAllowedChannel as the primary
+// lookup so outbound checks never depend on discord.js's cached recipientId.
+const dmChannelUser = new Map<string, string>()
+
 // Track message IDs we recently sent, so reply-to-bot in guild channels
 // counts as a mention without needing fetchReference().
 const recentSentIds = new Set<string>()
@@ -242,7 +247,10 @@ async function gate(msg: Message): Promise<GateResult> {
   const isDM = msg.channel.type === ChannelType.DM
 
   if (isDM) {
-    if (access.allowFrom.includes(senderId)) return { action: 'deliver', access }
+    if (access.allowFrom.includes(senderId)) {
+      dmChannelUser.set(msg.channelId, senderId)
+      return { action: 'deliver', access }
+    }
     if (access.dmPolicy === 'allowlist') return { action: 'drop' }
 
     // pairing mode — check for existing non-expired code for this sender
@@ -404,7 +412,8 @@ async function fetchAllowedChannel(id: string) {
   const ch = await fetchTextChannel(id)
   const access = loadAccess()
   if (ch.type === ChannelType.DM) {
-    if (access.allowFrom.includes(ch.recipientId)) return ch
+    const userId = dmChannelUser.get(id) ?? ch.recipientId
+    if (userId && access.allowFrom.includes(userId)) return ch
   } else {
     const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
     if (key in access.groups) return ch
@@ -750,11 +759,6 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})
     return
   }
-  // INTERACTION_CREATE patches the channel cache with partial data that
-  // can drop recipientId on DM channels. Force-fetch to restore before
-  // any permission notification reaches Claude and triggers a reply.
-  await client.channels.fetch(interaction.channelId, { force: true }).catch(() => {})
-
   const [, behavior, request_id] = m
 
   if (behavior === 'more') {
