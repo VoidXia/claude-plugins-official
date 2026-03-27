@@ -389,8 +389,8 @@ function chunk(text: string, limit: number, mode: 'length' | 'newline'): string[
   return out
 }
 
-async function fetchTextChannel(id: string, force = false) {
-  const ch = await client.channels.fetch(id, { force })
+async function fetchTextChannel(id: string) {
+  const ch = await client.channels.fetch(id)
   if (!ch || !ch.isTextBased()) {
     throw new Error(`channel ${id} not found or not text-based`)
   }
@@ -401,18 +401,8 @@ async function fetchTextChannel(id: string, force = false) {
 // from. DM channel ID ≠ user ID, so we inspect the fetched channel's type.
 // Thread → parent lookup mirrors the inbound gate.
 async function fetchAllowedChannel(id: string) {
-  let ch = await fetchTextChannel(id)
+  const ch = await fetchTextChannel(id)
   const access = loadAccess()
-  if (ch.type === ChannelType.DM) {
-    if (access.allowFrom.includes(ch.recipientId)) return ch
-  } else {
-    const key = ch.isThread() ? ch.parentId ?? ch.id : ch.id
-    if (key in access.groups) return ch
-  }
-  // Gateway events (e.g. INTERACTION_CREATE for permission buttons) can
-  // patch the cached channel with partial data, dropping recipientId on
-  // DM channels. Force-fetch from the Discord API and retry once.
-  ch = await fetchTextChannel(id, true)
   if (ch.type === ChannelType.DM) {
     if (access.allowFrom.includes(ch.recipientId)) return ch
   } else {
@@ -760,6 +750,11 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     await interaction.reply({ content: 'Not authorized.', ephemeral: true }).catch(() => {})
     return
   }
+  // INTERACTION_CREATE patches the channel cache with partial data that
+  // can drop recipientId on DM channels. Force-fetch to restore before
+  // any permission notification reaches Claude and triggers a reply.
+  await client.channels.fetch(interaction.channelId, { force: true }).catch(() => {})
+
   const [, behavior, request_id] = m
 
   if (behavior === 'more') {
